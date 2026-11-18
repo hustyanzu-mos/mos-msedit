@@ -1,0 +1,21 @@
+#!/bin/sh
+# msedit wrapper for MOS.
+# Points LD_LIBRARY_PATH at the plugin's ICU libraries when needed.
+
+PLG_DIR="${MSEDIT_PLUGIN_DIR:-/boot/optional/plugins/msedit}"
+LIB_DIR="$PLG_DIR/lib"
+BIN_REAL="${MSEDIT_USR_BIN_DIR:-/usr/bin}/msedit.real"
+BIN="$PLG_DIR/bin/msedit"
+
+if [ -x "$BIN_REAL" ]; then
+  BIN="$BIN_REAL"
+fi
+
+if [ ! -x "$BIN" ]; then
+  echo "msedit is not installed yet. Open the msedit plugin in MOS and click Install." >&2
+  exit 127
+fi
+
+export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+exec "$BIN" "$@"

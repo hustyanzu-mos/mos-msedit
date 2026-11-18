@@ -1,18 +1,13 @@
 #!/bin/sh
-# msedit wrapper for MOS.
-# Points LD_LIBRARY_PATH at the plugin's ICU libraries when needed.
+# MSEdit wrapper for MOS.
+# The real binary is installed by the plugin .deb at /usr/lib/msedit/msedit.
 
 PLG_DIR="${MSEDIT_PLUGIN_DIR:-/boot/optional/plugins/msedit}"
+BIN="${MSEDIT_BIN:-/usr/lib/msedit/msedit}"
 LIB_DIR="$PLG_DIR/lib"
-BIN_REAL="${MSEDIT_USR_BIN_DIR:-/usr/bin}/msedit.real"
-BIN="$PLG_DIR/bin/msedit"
-
-if [ -x "$BIN_REAL" ]; then
-  BIN="$BIN_REAL"
-fi
 
 if [ ! -x "$BIN" ]; then
-  echo "msedit is not installed yet. Open the msedit plugin in MOS and click Install." >&2
+  echo "MSEdit is not installed. Reinstall the MSEdit plugin from MOS Hub." >&2
   exit 127
 fi
 

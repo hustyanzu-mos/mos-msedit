@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build a local MOS plugin .deb for msedit.
+# Build a local MOS plugin .deb for MSEdit (host architecture).
+# The msedit binary is embedded in the .deb and installed under /usr/lib/msedit.
 
 set -euo pipefail
 
@@ -8,15 +9,22 @@ cd "$ROOT"
 
 VERSION="${1:-${VERSION:-}}"
 if [ -z "$VERSION" ]; then
-  VERSION="$(node -e "import('./page/plugin.config.js').then(m => console.log(m.default.version))" 2>/dev/null || echo 0.1.0)"
+  VERSION="$(node -e "import('./page/plugin.config.js').then(m => console.log(m.default.version))" 2>/dev/null || echo 0.2.0)"
 fi
 
-PKG_NAME="msedit-${VERSION}-1+mos-plugin"
-PKG_DIR="$ROOT/build/${PKG_NAME}_all"
-DEB_FILE="$ROOT/build/${PKG_NAME}_all.deb"
-PAGE_DIST="$ROOT/page/dist/msedit"
+case "$(uname -m)" in
+  x86_64|amd64) DEB_ARCH=amd64; MSEDIT_ARCH=x86_64 ;;
+  aarch64|arm64) DEB_ARCH=arm64; MSEDIT_ARCH=aarch64 ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
 
-echo "==> MSEdit MOS plugin ${VERSION}"
+PKG_NAME="msedit-${VERSION}-1+mos-plugin_${DEB_ARCH}"
+PKG_DIR="$ROOT/build/${PKG_NAME}"
+DEB_FILE="$ROOT/build/${PKG_NAME}.deb"
+PAGE_DIST="$ROOT/page/dist/msedit"
+SUFFIX="-${MSEDIT_ARCH}-linux-gnu.tar.gz"
+
+echo "==> MSEdit MOS plugin ${VERSION} (${DEB_ARCH})"
 
 if [ "${SKIP_PAGE:-0}" != "1" ]; then
   if ! command -v npm >/dev/null 2>&1; then
@@ -36,12 +44,33 @@ if [ ! -f "$PAGE_DIST/remoteEntry.js" ]; then
   exit 1
 fi
 
-rm -rf "$ROOT/build"
+rm -rf "$PKG_DIR"
 mkdir -p \
   "$PKG_DIR/DEBIAN" \
   "$PKG_DIR/usr/bin/plugins" \
+  "$PKG_DIR/usr/lib/msedit" \
   "$PKG_DIR/usr/share/msedit-plugin" \
   "$PKG_DIR/var/www/mos-plugins/msedit"
+
+echo "==> fetching MSEdit ${SUFFIX}"
+REL="$(curl -fsSL --retry 2 https://api.github.com/repos/microsoft/edit/releases/latest)"
+TAG="$(printf '%s' "$REL" | jq -r '.tag_name // empty')"
+MSEDIT_VERSION="${TAG#v}"
+[ -n "$MSEDIT_VERSION" ] || { echo "cannot read MSEdit release" >&2; exit 1; }
+URL="$(printf '%s' "$REL" | jq -r --arg s "$SUFFIX" '.assets[] | select(.name | endswith($s)) | .browser_download_url' | head -n1)"
+DIGEST="$(printf '%s' "$REL" | jq -r --arg s "$SUFFIX" '.assets[] | select(.name | endswith($s)) | .digest // empty' | head -n1)"
+[ -n "$URL" ] || { echo "no Linux asset for $MSEDIT_ARCH" >&2; exit 1; }
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+curl -fsSL --retry 2 "$URL" -o "$TMP/msedit.tar.gz"
+if [ -n "$DIGEST" ]; then
+  case "$DIGEST" in sha256:*) DIGEST="${DIGEST#sha256:}" ;; esac
+  printf '%s  %s\n' "$DIGEST" "$TMP/msedit.tar.gz" | sha256sum -c - >/dev/null
+fi
+tar -xzf "$TMP/msedit.tar.gz" -C "$TMP"
+[ -x "$TMP/edit" ] || { echo "archive does not contain edit" >&2; exit 1; }
+install -m 0755 "$TMP/edit" "$PKG_DIR/usr/lib/msedit/msedit"
 
 install -m 0755 "$ROOT/msedit-backend" "$PKG_DIR/usr/bin/plugins/msedit"
 install -m 0755 "$ROOT/msedit-wrapper" "$PKG_DIR/usr/bin/msedit"
@@ -57,7 +86,7 @@ install -m 0644 "$ROOT/images/msedit.png" "$PKG_DIR/var/www/mos-plugins/msedit/i
 cat > "$PKG_DIR/DEBIAN/control" <<EOF
 Package: msedit-plugin
 Version: ${VERSION}-1+mos-plugin
-Architecture: all
+Architecture: ${DEB_ARCH}
 Maintainer: hustyanzu
 Section: utils
 Priority: optional
@@ -70,13 +99,7 @@ cat > "$PKG_DIR/DEBIAN/postinst" <<'EOF'
 set -e
 PLG=/boot/optional/plugins/msedit
 SHARE=/usr/share/msedit-plugin
-mkdir -p "$PLG/bin" "$PLG/lib"
-mkdir -p "$PLG/packages"
-if [ ! -f "$PLG/packages/packages" ]; then
-  pkg="$(apt-cache search '^libicu[0-9]+$' 2>/dev/null | awk '{print $1}' | sort -V | tail -n1)"
-  [ -n "$pkg" ] || pkg=libicu76
-  printf '%s\n' "$pkg" > "$PLG/packages/packages"
-fi
+mkdir -p "$PLG/lib" "$PLG/packages"
 chmod 0755 /usr/bin/plugins/msedit /usr/bin/msedit 2>/dev/null || true
 for f in msedit-backend msedit-wrapper functions; do
   cp -f "$SHARE/$f" "$PLG/$f"
@@ -85,8 +108,10 @@ chmod 0755 "$PLG/msedit-backend" "$PLG/msedit-wrapper" "$PLG/functions" 2>/dev/n
 if [ ! -f "$PLG/settings.json" ]; then
   cp -f "$SHARE/settings.json" "$PLG/settings.json"
 fi
-if [ -x "$PLG/bin/msedit" ]; then
-  install -m 0755 "$PLG/bin/msedit" /usr/bin/msedit.real
+if [ ! -f "$PLG/packages/packages" ]; then
+  pkg="$(apt-cache search '^libicu[0-9]+$' 2>/dev/null | awk '{print $1}' | sort -V | tail -n1)"
+  [ -n "$pkg" ] || pkg=libicu76
+  printf '%s\n' "$pkg" > "$PLG/packages/packages"
 fi
 if [ ! -e /usr/bin/edit ]; then
   ln -sf msedit /usr/bin/edit
@@ -97,7 +122,6 @@ chmod 0755 "$PKG_DIR/DEBIAN/postinst"
 
 cat > "$PKG_DIR/DEBIAN/postrm" <<'EOF'
 #!/bin/bash
-rm -f /usr/bin/msedit.real
 if [ -L /usr/bin/edit ] && [ "$(readlink /usr/bin/edit)" = "msedit" ]; then
   rm -f /usr/bin/edit
 fi
@@ -122,6 +146,6 @@ md5sum "$DEB_FILE" | awk '{print $1}' > "$DEB_FILE.md5"
 echo
 echo "Package: $DEB_FILE"
 echo "MD5:     $(cat "$DEB_FILE.md5")"
+echo "MSEdit:  $MSEDIT_VERSION"
 echo
-echo "Install on MOS:  dpkg -i $(basename "$DEB_FILE")"
-echo "Then open Plugins -> MSEdit and click Install."
+echo "Install the plugin via MOS Hub."

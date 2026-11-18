@@ -1,389 +1,80 @@
 #!/bin/bash
-# msedit backend for MOS.
-# Called through POST /api/v1/mos/plugins/query with command "msedit".
-#
-# Persistent layout:
-#   /boot/optional/plugins/msedit/
-#     bin/msedit          persistent binary
-#     lib/                ICU runtime libraries and symlinks
-#     settings.json
-# /usr/bin/msedit.real is the RAM copy used by the wrapper.
+# MSEdit backend for MOS.
+# The msedit binary is installed by the plugin .deb under /usr/lib/msedit.
+# This backend reports status and can install the optional ICU package.
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 022
 
 PLG_DIR="${MSEDIT_PLUGIN_DIR:-/boot/optional/plugins/msedit}"
-BIN="$PLG_DIR/bin/msedit"
-LIB_DIR="$PLG_DIR/lib"
+BIN="${MSEDIT_BIN:-/usr/lib/msedit/msedit}"
 SETTINGS="$PLG_DIR/settings.json"
-USR_BIN_DIR="${MSEDIT_USR_BIN_DIR:-/usr/bin}"
-BIN_REAL="$USR_BIN_DIR/msedit.real"
 SHARE_DIR="${MSEDIT_SHARE_DIR:-/usr/share/msedit-plugin}"
-GH_REPO="microsoft/edit"
 
-mkdir -p "$PLG_DIR/bin" "$LIB_DIR" 2>/dev/null
-
-fail() { echo "Error: $*" >&2; exit 1; }
 say() { echo "$*"; }
-
-write_default_settings() {
-  cat > "$SETTINGS" <<'JSON'
-{
-  "auto_install": true,
-  "pin_version": "",
-  "version": ""
-}
-JSON
-}
 
 ensure_settings() {
   mkdir -p "$PLG_DIR"
-  if [ -f "$SETTINGS" ] && ! jq empty "$SETTINGS" >/dev/null 2>&1; then
-    cp -f "$SETTINGS" "$SETTINGS.bak.$(date +%s)" 2>/dev/null || true
-    rm -f "$SETTINGS"
-  fi
   if [ ! -f "$SETTINGS" ]; then
     if [ -f "$SHARE_DIR/settings.json" ]; then
       cp -f "$SHARE_DIR/settings.json" "$SETTINGS"
     else
-      write_default_settings
+      printf '{}\n' > "$SETTINGS"
     fi
-  fi
-}
-
-setting() {
-  jq -r --arg k "$1" '.[$k] // empty' "$SETTINGS" 2>/dev/null
-}
-
-set_setting() {
-  local key="$1" value="$2" tmp
-  ensure_settings
-  tmp="$(mktemp)" || return 1
-  if jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$SETTINGS" > "$tmp" 2>/dev/null; then
-    mv -f "$tmp" "$SETTINGS"
-  else
-    rm -f "$tmp"
-    return 1
-  fi
-}
-
-init_token() {
-  GH_AUTH="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-  if [ -z "$GH_AUTH" ] && [ -r /boot/config/system/tokens.json ] && command -v jq >/dev/null 2>&1; then
-    local enc
-    enc="$(jq -r '.github // empty' /boot/config/system/tokens.json 2>/dev/null)"
-    if [ -n "$enc" ] && [ -f /usr/local/lib/functions/mos-common ]; then
-      # shellcheck disable=SC1091
-      . /usr/local/lib/functions/mos-common
-      GH_AUTH="$(decrypt_password "$enc" "tokens" 2>/dev/null || true)"
-    fi
-  fi
-}
-
-gh_get() {
-  if [ -n "${GH_AUTH:-}" ]; then
-    curl -fsSL --connect-timeout 15 --retry 2 \
-      -H "Authorization: Bearer $GH_AUTH" \
-      -H "Accept: application/vnd.github+json" "$1"
-  else
-    curl -fsSL --connect-timeout 15 --retry 2 \
-      -H "Accept: application/vnd.github+json" "$1"
-  fi
-}
-
-asset_suffix() {
-  case "$(uname -m)" in
-    x86_64|amd64) echo "x86_64-linux-gnu.tar.gz" ;;
-    aarch64|arm64) echo "aarch64-linux-gnu.tar.gz" ;;
-    *) return 1 ;;
-  esac
-}
-
-old_version() {
-  if [ -x "$BIN" ]; then
-    "$BIN" --version 2>/dev/null | awk '{print $3}'
-  else
-    setting version
   fi
 }
 
 current_version() {
-  local v
-  v="$(old_version)"
-  if [ -n "$v" ]; then
-    echo "$v"
-  else
-    setting version
-  fi
-}
-
-can_write_usr() {
-  [ "${MSEDIT_SKIP_LINKS:-0}" = "1" ] && return 1
-  [ -w "$USR_BIN_DIR" ] || return 1
-  return 0
-}
-
-ensure_runtime_files() {
-  mkdir -p "$PLG_DIR/bin" "$LIB_DIR" 2>/dev/null
-
-  if can_write_usr; then
-    mkdir -p "$USR_BIN_DIR/plugins" 2>/dev/null
-
-    if [ ! -x "$USR_BIN_DIR/plugins/msedit" ]; then
-      if [ -f "$PLG_DIR/msedit-backend" ]; then
-        cp -f "$PLG_DIR/msedit-backend" "$USR_BIN_DIR/plugins/msedit"
-      elif [ -f "$SHARE_DIR/msedit-backend" ]; then
-        cp -f "$SHARE_DIR/msedit-backend" "$USR_BIN_DIR/plugins/msedit"
-      fi
-      chmod 0755 "$USR_BIN_DIR/plugins/msedit" 2>/dev/null || true
-    fi
-
-    if [ ! -x "$USR_BIN_DIR/msedit" ]; then
-      if [ -f "$PLG_DIR/msedit-wrapper" ]; then
-        cp -f "$PLG_DIR/msedit-wrapper" "$USR_BIN_DIR/msedit"
-      elif [ -f "$SHARE_DIR/msedit-wrapper" ]; then
-        cp -f "$SHARE_DIR/msedit-wrapper" "$USR_BIN_DIR/msedit"
-      fi
-      chmod 0755 "$USR_BIN_DIR/msedit" 2>/dev/null || true
-    fi
-
-    if [ -x "$BIN" ]; then
-      if [ ! -x "$BIN_REAL" ] || [ "$BIN" -nt "$BIN_REAL" ]; then
-        install -m 0755 "$BIN" "$BIN_REAL" 2>/dev/null || true
-      fi
-    fi
-
-    if [ ! -e "$USR_BIN_DIR/edit" ]; then
-      ln -sf msedit "$USR_BIN_DIR/edit" 2>/dev/null || true
-    fi
-  fi
-}
-
-icu_source() {
-  if ldconfig -p 2>/dev/null | grep -q 'libicuuc\.so'; then
-    echo "system"
-  elif [ -e "$LIB_DIR/libicuuc.so" ] || ls "$LIB_DIR"/libicuuc.so.* >/dev/null 2>&1; then
-    echo "plugin"
-  else
-    echo "missing"
-  fi
-}
-
-icu_package() {
-  local p
-  p="$(apt-cache search '^libicu[0-9]+$' 2>/dev/null | awk '{print $1}' | sort -V | tail -n1)"
-  [ -n "$p" ] || p="libicu76"
-  echo "$p"
-}
-
-link_icu_libs() {
-  local f base name
-  for f in /usr/lib/*/libicuuc.so.* /lib/*/libicuuc.so.* "$LIB_DIR"/libicuuc.so.*; do
-    [ -e "$f" ] || continue
-    base="$(basename "$f")"; name="${base%%.so.*}"
-    ln -sf "$f" "$LIB_DIR/$name.so" 2>/dev/null || true
-    break
-  done
-  for f in /usr/lib/*/libicui18n.so.* /lib/*/libicui18n.so.* "$LIB_DIR"/libicui18n.so.*; do
-    [ -e "$f" ] || continue
-    base="$(basename "$f")"; name="${base%%.so.*}"
-    ln -sf "$f" "$LIB_DIR/$name.so" 2>/dev/null || true
-    break
-  done
-  for f in /usr/lib/*/libicudata.so.* /lib/*/libicudata.so.* "$LIB_DIR"/libicudata.so.*; do
-    [ -e "$f" ] || continue
-    base="$(basename "$f")"; name="${base%%.so.*}"
-    ln -sf "$f" "$LIB_DIR/$name.so" 2>/dev/null || true
-    break
-  done
-}
-
-extract_icu_deb() {
-  local deb="$1" tmp root f base name
-  tmp="$(mktemp -d)" || return 1
-  root="$tmp/root"
-  mkdir -p "$root"
-  if command -v dpkg-deb >/dev/null 2>&1; then
-    dpkg-deb -x "$deb" "$root" || { rm -rf "$tmp"; return 1; }
-  else
-    ( cd "$tmp" && ar x "$deb" && tar -xf data.tar.* -C "$root" ) || { rm -rf "$tmp"; return 1; }
-  fi
-  find "$root/usr/lib" -name 'libicu*.so.*' -type f -exec cp -a {} "$LIB_DIR/" \; 2>/dev/null
-  rm -rf "$tmp"
-  for f in "$LIB_DIR"/libicu*.so.*; do
-    [ -e "$f" ] || continue
-    base="$(basename "$f")"; name="${base%%.so.*}"
-    ln -sf "$base" "$LIB_DIR/$name.so" 2>/dev/null || true
-  done
-  return 0
-}
-
-ensure_icu() {
-  if [ "${MSEDIT_SKIP_ICU:-0}" = "1" ]; then
-    return 0
-  fi
-
-  local source pkg deb
-  source="$(icu_source)"
-  if [ "$source" != "missing" ]; then
-    link_icu_libs
-    return 0
-  fi
-
-  pkg="$(icu_package)"
-  mkdir -p "$PLG_DIR/packages"
-  printf '%s
-' "$pkg" > "$PLG_DIR/packages/packages"
-
-  if [ -n "${MSEDIT_ICU_DEB:-}" ] && [ -f "$MSEDIT_ICU_DEB" ]; then
-    cp -f "$MSEDIT_ICU_DEB" "$PLG_DIR/packages/" 2>/dev/null || true
-  else
-    ( cd "$PLG_DIR/packages" && apt-get download "$pkg" >/dev/null 2>&1 ) || true
-    if ! ls "$PLG_DIR"/packages/${pkg}_*.deb >/dev/null 2>&1; then
-      apt-get install --download-only --no-install-recommends -y \
-        -o Dir::Cache::archives="$PLG_DIR/packages/" "$pkg" >/dev/null 2>&1 || true
-    fi
-  fi
-
-  deb="$(ls "$PLG_DIR"/packages/${pkg}_*.deb 2>/dev/null | head -n1)"
-  [ -n "$deb" ] || deb="$(ls "$PLG_DIR"/packages/*.deb 2>/dev/null | head -n1)"
-
-  if [ -n "$deb" ] && command -v dpkg >/dev/null 2>&1; then
-    if dpkg -i "$PLG_DIR"/packages/*.deb >/dev/null 2>&1; then
-      ldconfig 2>/dev/null || true
-      link_icu_libs
-      say "ICU: installed from $pkg"
-      return 0
-    fi
-  fi
-
-  if [ -n "$deb" ] && extract_icu_deb "$deb"; then
-    say "ICU: bundled from $pkg"
-    return 0
-  fi
-
-  say "ICU: could not install $pkg"
-  return 1
-}
-
-cmd_check_version() {
-  local json tag latest current update=false
-  ensure_settings
-  init_token
-  current="$(current_version)"
-  [ -n "$current" ] || current="not installed"
-
-  if ! json="$(gh_get "https://api.github.com/repos/$GH_REPO/releases/latest")"; then
-    printf '{"current":"%s","latest":"","update_available":false,"error":"cannot reach GitHub"}\n' "$current"
-    return 1
-  fi
-
-  tag="$(printf '%s' "$json" | jq -r '.tag_name // empty' 2>/dev/null)"
-  latest="${tag#v}"
-  if [ -z "$latest" ]; then
-    printf '{"current":"%s","latest":"","update_available":false,"error":"invalid release data"}\n' "$current"
-    return 1
-  fi
-  if [ "$current" != "$latest" ]; then update=true; fi
-  printf '{"current":"%s","latest":"%s","update_available":%s}\n' "$current" "$latest" "$update"
-}
-
-cmd_install_binary() {
-  local pin_arg pin json tag version suffix url digest tmp
-  ensure_settings
-  init_token
-
-  pin_arg="${2:-}"
-  if [ "$pin_arg" = "latest" ]; then
-    pin=""
-  else
-    pin="$(setting pin_version)"
-  fi
-
-  if [ -n "$pin" ]; then
-    json="$(gh_get "https://api.github.com/repos/$GH_REPO/releases/tags/v$pin")" || fail "cannot fetch release v$pin"
-  else
-    json="$(gh_get "https://api.github.com/repos/$GH_REPO/releases/latest")" || fail "cannot fetch latest release"
-  fi
-
-  tag="$(printf '%s' "$json" | jq -r '.tag_name // empty' 2>/dev/null)"
-  version="${tag#v}"
-  [ -n "$version" ] || fail "release has no version"
-  suffix="$(asset_suffix)" || fail "unsupported architecture: $(uname -m)"
-
-  url="$(printf '%s' "$json" | jq -r --arg s "$suffix" '.assets[] | select(.name | endswith($s)) | .browser_download_url' 2>/dev/null | head -n1)"
-  digest="$(printf '%s' "$json" | jq -r --arg s "$suffix" '.assets[] | select(.name | endswith($s)) | .digest // empty' 2>/dev/null | head -n1)"
-  [ -n "$url" ] || fail "no Linux $suffix asset in release"
-
-  tmp="$(mktemp -d)" || fail "cannot create temporary directory"
-  trap 'rm -rf "$tmp"' EXIT
-
-  say "Downloading msedit $version..."
-  curl -fsSL --connect-timeout 20 --retry 2 "$url" -o "$tmp/msedit.tar.gz" || fail "download failed"
-  if [ -n "$digest" ]; then
-    case "$digest" in sha256:*) digest="${digest#sha256:}" ;; esac
-    if command -v sha256sum >/dev/null 2>&1; then
-      ( cd "$tmp" && printf '%s  %s\n' "$digest" "msedit.tar.gz" | sha256sum -c - >/dev/null ) || fail "checksum mismatch"
-    else
-      local got
-      got="$(shasum -a 256 "$tmp/msedit.tar.gz" | awk '{print $1}')"
-      [ "$got" = "$digest" ] || fail "checksum mismatch"
-    fi
-  fi
-
-  tar -xzf "$tmp/msedit.tar.gz" -C "$tmp" || fail "cannot extract archive"
-  [ -x "$tmp/edit" ] || fail "archive does not contain edit"
-  "$tmp/edit" --version >/dev/null 2>&1 || fail "downloaded msedit does not run"
-
-  install -m 0755 "$tmp/edit" "$BIN" || fail "cannot install msedit"
-  set_setting version "$version"
-  ensure_runtime_files
-  ensure_icu || true
-  say "Installed msedit $version"
-}
-
-cmd_install_icu() {
-  if ensure_icu; then
-    printf '{"installed":true,"source":"%s"}\n' "$(icu_source)"
-  else
-    printf '{"installed":false,"source":"missing"}\n'
-    return 1
+  if [ -x "$BIN" ]; then
+    "$BIN" --version 2>/dev/null | awk '{print $3}'
   fi
 }
 
 cmd_status() {
-  local installed=false version source
-  if [ -x "$BIN" ]; then installed=true; fi
+  local installed=false version
+  if [ -x "$BIN" ]; then
+    installed=true
+  fi
   version="$(current_version)"
   [ -n "$version" ] || version="not installed"
-  source="$(icu_source)"
-  printf '{"installed":%s,"version":"%s","icu":{"installed":%s,"source":"%s"},"command":"msedit"}\n' \
-    "$installed" "$version" "$([ "$source" != "missing" ] && echo true || echo false)" "$source"
+  printf '{"installed":%s,"version":"%s","command":"msedit"}\n' "$installed" "$version"
+}
+
+cmd_install_icu() {
+  local pkg tmp deb
+  pkg="$(apt-cache search '^libicu[0-9]+$' 2>/dev/null | awk '{print $1}' | sort -V | tail -n1)"
+  [ -n "$pkg" ] || pkg="libicu76"
+
+  mkdir -p "$PLG_DIR/packages"
+  printf '%s\n' "$pkg" > "$PLG_DIR/packages/packages"
+
+  if command -v dpkg >/dev/null 2>&1; then
+    ( cd "$PLG_DIR/packages" && apt-get download "$pkg" >/dev/null 2>&1 ) || true
+    if ls "$PLG_DIR"/packages/*.deb >/dev/null 2>&1; then
+      dpkg -i "$PLG_DIR"/packages/*.deb >/dev/null 2>&1 || true
+      ldconfig 2>/dev/null || true
+    fi
+  fi
+  say "ICU package: $pkg"
 }
 
 cmd_uninstall() {
-  if can_write_usr; then
-    rm -f "$USR_BIN_DIR/plugins/msedit" "$USR_BIN_DIR/msedit" "$BIN_REAL"
-    if [ -L "$USR_BIN_DIR/edit" ] && [ "$(readlink "$USR_BIN_DIR/edit")" = "msedit" ]; then
-      rm -f "$USR_BIN_DIR/edit"
-    fi
+  rm -f /usr/bin/plugins/msedit 2>/dev/null || true
+  if [ -L /usr/bin/edit ] && [ "$(readlink /usr/bin/edit)" = "msedit" ]; then
+    rm -f /usr/bin/edit 2>/dev/null || true
   fi
-  say "Removed msedit runtime. Persistent data kept in $PLG_DIR"
+  say "Removed msedit plugin entry. Persistent data kept in $PLG_DIR"
 }
 
 ensure_settings
-ensure_runtime_files
 
 case "${1:-}" in
-  check_version) cmd_check_version ;;
-  install_binary|install|update) cmd_install_binary "$@" ;;
-  install_icu) cmd_install_icu ;;
   status) cmd_status ;;
-  ensure_runtime) ensure_runtime_files ;;
+  install_icu) cmd_install_icu ;;
   version) current_version ;;
   uninstall) cmd_uninstall ;;
   *)
-    echo "Usage: $0 {check_version|install_binary|install_icu|status|ensure_runtime|version|uninstall}" >&2
+    echo "Usage: $0 {status|install_icu|version|uninstall}" >&2
     exit 2
     ;;
 esac

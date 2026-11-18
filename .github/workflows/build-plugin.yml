@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Plugin version, e.g. 0.1.0'
+        description: 'Plugin version, e.g. 0.2.0'
         required: true
-        default: '0.1.0'
+        default: '0.2.0'
 
 jobs:
   build:
@@ -45,36 +45,56 @@ jobs:
           npm install
           npm run build
 
-      - name: Create package structure
+      - name: Fetch MSEdit release
+        id: msedit
+        run: |
+          REL=$(curl -fsSL https://api.github.com/repos/microsoft/edit/releases/latest)
+          TAG=$(printf '%s' "$REL" | jq -r '.tag_name')
+          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build both architecture packages
         run: |
           VERSION='${{ steps.version.outputs.VERSION }}'
-          PKG_NAME="msedit-${VERSION}-1+mos-plugin"
-          PKG_DIR="${PKG_NAME}_all"
+          MSEDIT_VERSION='${{ steps.msedit.outputs.VERSION }}'
+          REL=$(curl -fsSL https://api.github.com/repos/microsoft/edit/releases/latest)
 
-          mkdir -p ${PKG_DIR}/usr/bin/plugins
-          mkdir -p ${PKG_DIR}/usr/share/msedit-plugin
-          mkdir -p ${PKG_DIR}/var/www/mos-plugins/msedit
-          mkdir -p ${PKG_DIR}/DEBIAN
+          for pair in "amd64 x86_64" "arm64 aarch64"; do
+            set -- $pair
+            DEB_ARCH="$1"
+            MSEDIT_ARCH="$2"
+            PKG_NAME="msedit-${VERSION}-1+mos-plugin_${DEB_ARCH}"
+            PKG_DIR="${PKG_NAME}"
+            SUFFIX="-${MSEDIT_ARCH}-linux-gnu.tar.gz"
+            URL=$(printf '%s' "$REL" | jq -r --arg s "$SUFFIX" '.assets[] | select(.name | endswith($s)) | .browser_download_url' | head -n1)
+            DIGEST=$(printf '%s' "$REL" | jq -r --arg s "$SUFFIX" '.assets[] | select(.name | endswith($s)) | .digest // empty' | head -n1)
+            [ -n "$URL" ] || { echo "no Linux asset for $MSEDIT_ARCH" >&2; exit 1; }
 
-          cp msedit-backend ${PKG_DIR}/usr/bin/plugins/msedit
-          chmod 0755 ${PKG_DIR}/usr/bin/plugins/msedit
-          cp msedit-wrapper ${PKG_DIR}/usr/bin/msedit
-          chmod 0755 ${PKG_DIR}/usr/bin/msedit
+            mkdir -p "${PKG_DIR}/DEBIAN" "${PKG_DIR}/usr/bin/plugins" "${PKG_DIR}/usr/lib/msedit" "${PKG_DIR}/usr/share/msedit-plugin" "${PKG_DIR}/var/www/mos-plugins/msedit"
+            curl -fsSL "$URL" -o /tmp/msedit.tar.gz
+            if [ -n "$DIGEST" ]; then
+              case "$DIGEST" in sha256:*) DIGEST="${DIGEST#sha256:}" ;; esac
+              printf '%s  %s\n' "$DIGEST" "/tmp/msedit.tar.gz" | sha256sum -c - >/dev/null
+            fi
+            mkdir -p /tmp/msedit-extract
+            tar -xzf /tmp/msedit.tar.gz -C /tmp/msedit-extract
+            install -m 0755 /tmp/msedit-extract/edit "${PKG_DIR}/usr/lib/msedit/msedit"
 
-          cp msedit-backend ${PKG_DIR}/usr/share/msedit-plugin/
-          cp msedit-wrapper ${PKG_DIR}/usr/share/msedit-plugin/
-          cp functions settings.json ${PKG_DIR}/usr/share/msedit-plugin/
-          chmod 0755 ${PKG_DIR}/usr/share/msedit-plugin/msedit-backend
-          chmod 0755 ${PKG_DIR}/usr/share/msedit-plugin/msedit-wrapper
-          chmod 0755 ${PKG_DIR}/usr/share/msedit-plugin/functions
+            cp msedit-backend "${PKG_DIR}/usr/bin/plugins/msedit"
+            chmod 0755 "${PKG_DIR}/usr/bin/plugins/msedit"
+            cp msedit-wrapper "${PKG_DIR}/usr/bin/msedit"
+            chmod 0755 "${PKG_DIR}/usr/bin/msedit"
+            cp msedit-backend "${PKG_DIR}/usr/share/msedit-plugin/"
+            cp msedit-wrapper "${PKG_DIR}/usr/share/msedit-plugin/"
+            cp functions settings.json "${PKG_DIR}/usr/share/msedit-plugin/"
+            chmod 0755 "${PKG_DIR}/usr/share/msedit-plugin/msedit-backend" "${PKG_DIR}/usr/share/msedit-plugin/msedit-wrapper" "${PKG_DIR}/usr/share/msedit-plugin/functions"
+            cp -R page/dist/msedit/. "${PKG_DIR}/var/www/mos-plugins/msedit/"
+            cp images/msedit.png "${PKG_DIR}/var/www/mos-plugins/msedit/icon.png"
 
-          cp -R page/dist/msedit/. ${PKG_DIR}/var/www/mos-plugins/msedit/
-          cp images/msedit.png ${PKG_DIR}/var/www/mos-plugins/msedit/icon.png
-
-          cat > ${PKG_DIR}/DEBIAN/control << EOF
+            cat > "${PKG_DIR}/DEBIAN/control" << EOF
           Package: msedit-plugin
           Version: ${VERSION}-1+mos-plugin
-          Architecture: all
+          Architecture: ${DEB_ARCH}
           Maintainer: hustyanzu
           Section: utils
           Priority: optional
@@ -82,18 +102,12 @@ jobs:
            Simple terminal text editor inspired by the MS-DOS Editor.
           EOF
 
-          cat > ${PKG_DIR}/DEBIAN/postinst << 'EOF'
+            cat > "${PKG_DIR}/DEBIAN/postinst" << 'EOF'
           #!/bin/bash
           set -e
           PLG=/boot/optional/plugins/msedit
           SHARE=/usr/share/msedit-plugin
-          mkdir -p "$PLG/bin" "$PLG/lib"
-          mkdir -p "$PLG/packages"
-          if [ ! -f "$PLG/packages/packages" ]; then
-            pkg="$(apt-cache search '^libicu[0-9]+$' 2>/dev/null | awk '{print $1}' | sort -V | tail -n1)"
-            [ -n "$pkg" ] || pkg=libicu76
-            printf '%s\n' "$pkg" > "$PLG/packages/packages"
-          fi
+          mkdir -p "$PLG/lib" "$PLG/packages"
           chmod 0755 /usr/bin/plugins/msedit /usr/bin/msedit 2>/dev/null || true
           for f in msedit-backend msedit-wrapper functions; do
             cp -f "$SHARE/$f" "$PLG/$f"
@@ -102,35 +116,31 @@ jobs:
           if [ ! -f "$PLG/settings.json" ]; then
             cp -f "$SHARE/settings.json" "$PLG/settings.json"
           fi
-          if [ -x "$PLG/bin/msedit" ]; then
-            install -m 0755 "$PLG/bin/msedit" /usr/bin/msedit.real
+          if [ ! -f "$PLG/packages/packages" ]; then
+            pkg="$(apt-cache search '^libicu[0-9]+$' 2>/dev/null | awk '{print $1}' | sort -V | tail -n1)"
+            [ -n "$pkg" ] || pkg=libicu76
+            printf '%s\n' "$pkg" > "$PLG/packages/packages"
           fi
           if [ ! -e /usr/bin/edit ]; then
             ln -sf msedit /usr/bin/edit
           fi
           exit 0
           EOF
-          chmod 0755 ${PKG_DIR}/DEBIAN/postinst
+            chmod 0755 "${PKG_DIR}/DEBIAN/postinst"
 
-          cat > ${PKG_DIR}/DEBIAN/postrm << 'EOF'
+            cat > "${PKG_DIR}/DEBIAN/postrm" << 'EOF'
           #!/bin/bash
-          rm -f /usr/bin/msedit.real
           if [ -L /usr/bin/edit ] && [ "$(readlink /usr/bin/edit)" = "msedit" ]; then
             rm -f /usr/bin/edit
           fi
           exit 0
           EOF
-          chmod 0755 ${PKG_DIR}/DEBIAN/postrm
+            chmod 0755 "${PKG_DIR}/DEBIAN/postrm"
 
-      - name: Build .deb package
-        run: |
-          VERSION='${{ steps.version.outputs.VERSION }}'
-          PKG_NAME="msedit-${VERSION}-1+mos-plugin"
-          PKG_DIR="${PKG_NAME}_all"
-          DEB_FILE="${PKG_NAME}_all.deb"
-
-          dpkg-deb --build --root-owner-group ${PKG_DIR} ${DEB_FILE}
-          md5sum ${DEB_FILE} | awk '{print $1}' > ${DEB_FILE}.md5
+            dpkg-deb --build --root-owner-group "${PKG_DIR}" "${PKG_DIR}.deb"
+            md5sum "${PKG_DIR}.deb" | awk '{print $1}' > "${PKG_DIR}.deb.md5"
+            rm -rf /tmp/msedit-extract /tmp/msedit.tar.gz
+          done
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -140,10 +150,12 @@ jobs:
           body: |
             ## MSEdit MOS plugin ${{ steps.version.outputs.VERSION }}
 
-            Install the plugin from the MOS Hub, then click **Install** on the plugin page.
-            MSEdit is downloaded from Microsoft's GitHub releases.
+            The MSEdit ${{ steps.msedit.outputs.VERSION }} binary is embedded in the architecture-specific .deb.
+            Install the plugin from the MOS Hub.
           files: |
-            msedit-${{ steps.version.outputs.VERSION }}-1+mos-plugin_all.deb
-            msedit-${{ steps.version.outputs.VERSION }}-1+mos-plugin_all.deb.md5
+            msedit-${{ steps.version.outputs.VERSION }}-1+mos-plugin_amd64.deb
+            msedit-${{ steps.version.outputs.VERSION }}-1+mos-plugin_amd64.deb.md5
+            msedit-${{ steps.version.outputs.VERSION }}-1+mos-plugin_arm64.deb
+            msedit-${{ steps.version.outputs.VERSION }}-1+mos-plugin_arm64.deb.md5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

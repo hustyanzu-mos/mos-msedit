@@ -25,27 +25,17 @@
               <div class="text-subtitle-1 font-weight-medium">{{ status.version || 'Not installed' }}</div>
             </v-col>
             <v-col cols="12" md="4">
-              <div class="text-caption text-medium-emphasis">Latest</div>
-              <div class="text-subtitle-1 font-weight-medium">{{ latestVersion || '-' }}</div>
-            </v-col>
-            <v-col cols="12" md="4">
               <div class="text-caption text-medium-emphasis">Command</div>
               <div class="text-subtitle-1 font-weight-medium"><code>msedit</code></div>
             </v-col>
           </v-row>
 
           <div class="d-flex flex-wrap ga-2 mt-4">
-            <v-btn size="small" variant="tonal" color="secondary" :loading="checking" @click="checkForUpdates">
-              Check updates
-            </v-btn>
-            <v-btn v-if="!status.installed" size="small" color="primary" :loading="installing" @click="installCore">
-              Install
-            </v-btn>
-            <v-btn v-else-if="updateAvailable" size="small" color="primary" :loading="updating" @click="updateCore">
-              Update to {{ latestVersion }}
-            </v-btn>
             <v-btn size="small" variant="text" @click="refreshAll">Refresh</v-btn>
           </div>
+          <p class="text-caption text-medium-emphasis mt-2">
+            Updates come through the MOS Hub plugin release.
+          </p>
         </v-card-text>
       </v-card>
 
@@ -72,21 +62,14 @@ msedit /mnt/cache/some-file.txt</pre>
 import { ref, reactive, onMounted } from 'vue';
 
 const PLUGIN_NAME = 'msedit';
-const DEFAULT_SETTINGS = { auto_install: true, pin_version: '', version: '' };
 
 const loading = ref(true);
-const checking = ref(false);
-const installing = ref(false);
-const updating = ref(false);
 const error = ref('');
 const snackbar = ref(false);
 const snackbarText = ref('');
 const snackbarColor = ref('success');
 
-const settings = reactive({ ...DEFAULT_SETTINGS });
 const status = reactive({ installed: false, version: '', command: 'msedit' });
-const latestVersion = ref('');
-const updateAvailable = ref(false);
 
 const authHeaders = () => ({ Authorization: 'Bearer ' + (localStorage.getItem('authToken') || '') });
 const jsonHeaders = () => ({ ...authHeaders(), 'Content-Type': 'application/json' });
@@ -122,79 +105,22 @@ async function query(args, parseJson = false, timeout = 60) {
   return data;
 }
 
-async function fetchSettings() {
-  const res = await fetch(`/api/v1/mos/plugins/settings/${PLUGIN_NAME}`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`Settings request failed: HTTP ${res.status}`);
-  const raw = await res.json();
-  const data = raw && raw.data && typeof raw.data === 'object' ? raw.data : raw;
-  for (const key of Object.keys(DEFAULT_SETTINGS)) {
-    if (data[key] !== undefined && data[key] !== null) settings[key] = data[key];
-  }
-}
-
 async function refreshStatus() {
   const data = await query(['status'], true, 10);
   const out = parseOutput(data) || {};
   status.installed = out.installed === true;
   status.version = out.version || '';
   status.command = out.command || 'msedit';
-  if (out.version && out.version !== 'not installed') settings.version = out.version;
-}
-
-async function checkForUpdates() {
-  checking.value = true;
-  try {
-    const data = await query(['check_version'], true, 30);
-    const out = parseOutput(data) || {};
-    latestVersion.value = out.latest || '';
-    updateAvailable.value = status.installed && out.update_available === true;
-  } catch (e) {
-    setError(e);
-  } finally {
-    checking.value = false;
-  }
 }
 
 async function refreshAll() {
   loading.value = true;
   try {
-    await fetchSettings();
     await refreshStatus();
-    await checkForUpdates();
   } catch (e) {
     setError(e);
   } finally {
     loading.value = false;
-  }
-}
-
-async function installCore() {
-  installing.value = true;
-  try {
-    await query(['install_binary', 'latest'], false, 180);
-    await fetchSettings();
-    await refreshStatus();
-    await checkForUpdates();
-    notify('MSEdit installed');
-  } catch (e) {
-    setError(e);
-  } finally {
-    installing.value = false;
-  }
-}
-
-async function updateCore() {
-  updating.value = true;
-  try {
-    await query(['install_binary', 'latest'], false, 180);
-    await fetchSettings();
-    await refreshStatus();
-    await checkForUpdates();
-    notify('MSEdit updated');
-  } catch (e) {
-    setError(e);
-  } finally {
-    updating.value = false;
   }
 }
 

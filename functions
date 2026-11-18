@@ -57,6 +57,10 @@ install() {
     "$HB" install_binary >/dev/null 2>&1 || true
   fi
 
+  if [ -x "$HB" ]; then
+    "$HB" install_icu >/dev/null 2>&1 || true
+  fi
+
   return 0
 }
 

@@ -169,63 +169,38 @@ icu_source() {
   fi
 }
 
-ensure_icu() {
-  if [ "${MSEDIT_SKIP_ICU:-0}" = "1" ]; then
-    return 0
-  fi
+icu_package() {
+  local p
+  p="$(apt-cache search '^libicu[0-9]+$' 2>/dev/null | awk '{print $1}' | sort -V | tail -n1)"
+  [ -n "$p" ] || p="libicu76"
+  echo "$p"
+}
 
-  local source
-  source="$(icu_source)"
-  if [ "$source" != "missing" ]; then
-    # Make sure the unversioned names exist for the dynamic loader.
-    local f base name
-    for f in /usr/lib/*/libicuuc.so.* /lib/*/libicuuc.so.* "$LIB_DIR"/libicuuc.so.*; do
-      [ -e "$f" ] || continue
-      base="$(basename "$f")"
-      name="${base%%.so.*}"
-      ln -sf "$f" "$LIB_DIR/$name.so" 2>/dev/null || true
-      break
-    done
-    for f in /usr/lib/*/libicui18n.so.* /lib/*/libicui18n.so.* "$LIB_DIR"/libicui18n.so.*; do
-      [ -e "$f" ] || continue
-      base="$(basename "$f")"
-      name="${base%%.so.*}"
-      ln -sf "$f" "$LIB_DIR/$name.so" 2>/dev/null || true
-      break
-    done
-    for f in /usr/lib/*/libicudata.so.* /lib/*/libicudata.so.* "$LIB_DIR"/libicudata.so.*; do
-      [ -e "$f" ] || continue
-      base="$(basename "$f")"
-      name="${base%%.so.*}"
-      ln -sf "$f" "$LIB_DIR/$name.so" 2>/dev/null || true
-      break
-    done
-    return 0
-  fi
+link_icu_libs() {
+  local f base name
+  for f in /usr/lib/*/libicuuc.so.* /lib/*/libicuuc.so.* "$LIB_DIR"/libicuuc.so.*; do
+    [ -e "$f" ] || continue
+    base="$(basename "$f")"; name="${base%%.so.*}"
+    ln -sf "$f" "$LIB_DIR/$name.so" 2>/dev/null || true
+    break
+  done
+  for f in /usr/lib/*/libicui18n.so.* /lib/*/libicui18n.so.* "$LIB_DIR"/libicui18n.so.*; do
+    [ -e "$f" ] || continue
+    base="$(basename "$f")"; name="${base%%.so.*}"
+    ln -sf "$f" "$LIB_DIR/$name.so" 2>/dev/null || true
+    break
+  done
+  for f in /usr/lib/*/libicudata.so.* /lib/*/libicudata.so.* "$LIB_DIR"/libicudata.so.*; do
+    [ -e "$f" ] || continue
+    base="$(basename "$f")"; name="${base%%.so.*}"
+    ln -sf "$f" "$LIB_DIR/$name.so" 2>/dev/null || true
+    break
+  done
+}
 
-  local pkg tmp deb root
-  if [ -n "${MSEDIT_ICU_DEB:-}" ] && [ -f "$MSEDIT_ICU_DEB" ]; then
-    tmp="$(mktemp -d)" || return 1
-    cp -f "$MSEDIT_ICU_DEB" "$tmp/" || { rm -rf "$tmp"; return 1; }
-    deb="$tmp/$(basename "$MSEDIT_ICU_DEB")"
-    pkg="$(basename "$MSEDIT_ICU_DEB")"
-  else
-    pkg="$(apt-cache search '^libicu[0-9]+$' 2>/dev/null | awk '{print $1}' | sort -V | tail -n1)"
-    [ -n "$pkg" ] || pkg="libicu76"
-
-    tmp="$(mktemp -d)" || return 1
-    (
-      cd "$tmp" || exit 1
-      apt-get download "$pkg" >/dev/null 2>&1 || apt download "$pkg" >/dev/null 2>&1
-    )
-    deb="$(ls "$tmp"/${pkg}_*.deb 2>/dev/null | head -n1)"
-    if [ -z "$deb" ]; then
-      rm -rf "$tmp"
-      say "ICU: could not download $pkg"
-      return 1
-    fi
-  fi
-
+extract_icu_deb() {
+  local deb="$1" tmp root f base name
+  tmp="$(mktemp -d)" || return 1
   root="$tmp/root"
   mkdir -p "$root"
   if command -v dpkg-deb >/dev/null 2>&1; then
@@ -233,19 +208,62 @@ ensure_icu() {
   else
     ( cd "$tmp" && ar x "$deb" && tar -xf data.tar.* -C "$root" ) || { rm -rf "$tmp"; return 1; }
   fi
-
   find "$root/usr/lib" -name 'libicu*.so.*' -type f -exec cp -a {} "$LIB_DIR/" \; 2>/dev/null
   rm -rf "$tmp"
-
-  local f base name
   for f in "$LIB_DIR"/libicu*.so.*; do
     [ -e "$f" ] || continue
-    base="$(basename "$f")"
-    name="${base%%.so.*}"
+    base="$(basename "$f")"; name="${base%%.so.*}"
     ln -sf "$base" "$LIB_DIR/$name.so" 2>/dev/null || true
   done
+  return 0
+}
 
-  say "ICU: installed from $pkg"
+ensure_icu() {
+  if [ "${MSEDIT_SKIP_ICU:-0}" = "1" ]; then
+    return 0
+  fi
+
+  local source pkg deb
+  source="$(icu_source)"
+  if [ "$source" != "missing" ]; then
+    link_icu_libs
+    return 0
+  fi
+
+  pkg="$(icu_package)"
+  mkdir -p "$PLG_DIR/packages"
+  printf '%s
+' "$pkg" > "$PLG_DIR/packages/packages"
+
+  if [ -n "${MSEDIT_ICU_DEB:-}" ] && [ -f "$MSEDIT_ICU_DEB" ]; then
+    cp -f "$MSEDIT_ICU_DEB" "$PLG_DIR/packages/" 2>/dev/null || true
+  else
+    ( cd "$PLG_DIR/packages" && apt-get download "$pkg" >/dev/null 2>&1 ) || true
+    if ! ls "$PLG_DIR"/packages/${pkg}_*.deb >/dev/null 2>&1; then
+      apt-get install --download-only --no-install-recommends -y \
+        -o Dir::Cache::archives="$PLG_DIR/packages/" "$pkg" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  deb="$(ls "$PLG_DIR"/packages/${pkg}_*.deb 2>/dev/null | head -n1)"
+  [ -n "$deb" ] || deb="$(ls "$PLG_DIR"/packages/*.deb 2>/dev/null | head -n1)"
+
+  if [ -n "$deb" ] && command -v dpkg >/dev/null 2>&1; then
+    if dpkg -i "$PLG_DIR"/packages/*.deb >/dev/null 2>&1; then
+      ldconfig 2>/dev/null || true
+      link_icu_libs
+      say "ICU: installed from $pkg"
+      return 0
+    fi
+  fi
+
+  if [ -n "$deb" ] && extract_icu_deb "$deb"; then
+    say "ICU: bundled from $pkg"
+    return 0
+  fi
+
+  say "ICU: could not install $pkg"
+  return 1
 }
 
 cmd_check_version() {

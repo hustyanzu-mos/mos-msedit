@@ -112,16 +112,44 @@ LD_LIBRARY_PATH=/boot/optional/plugins/msedit/lib:...
 
 ## ICU 说明
 
-Devuan excalibur 的 ICU runtime 包是 `libicu76`。
-`install_icu` 会：
+Devuan excalibur 的 ICU runtime 包是 `libicu76`。插件优先走 **MOS 官方的
+附加包机制**：
 
-1. `apt-cache search '^libicu[0-9]+$'` 选择可用版本
-2. `apt-get download` 下载 `.deb`
-3. `dpkg-deb -x` 解压到临时目录
-4. 把 `libicu*.so.*` 复制到 `/boot/optional/plugins/msedit/lib`
-5. 创建 `libicuuc.so`、`libicui18n.so`、`libicudata.so` 等 unversioned symlink
+1. 在 `/boot/optional/plugins/msedit/packages/packages` 写入包名（例如 `libicu76`）
+2. 把 `.deb` 下载到 `/boot/optional/plugins/msedit/packages/`
+3. 立即执行 `dpkg -i packages/*.deb`（如果可用）
+4. MOS 启动时 `installplugins-mos` 会再次确保这些包已安装
 
-如果系统 ICU 已存在，插件只补 symlink，不重复下载。
+如果 `dpkg` 不可用或安装失败，插件会回退到把 `libicu*.so.*` 解压到
+`/boot/optional/plugins/msedit/lib`，并由包装脚本设置 `LD_LIBRARY_PATH`。
+这样即使系统包安装失败，msedit 的搜索/替换仍然可用。
+
+离线环境可以预先放置 `libicu76` 的 `.deb` 并设置：
+
+```bash
+MSEDIT_ICU_DEB=/path/to/libicu76_*.deb /usr/bin/plugins/msedit install_icu
+```
+
+---
+
+## 持久化
+
+MOS 的 Hub 安装器会把 `.deb` 和 `functions` 放到：
+
+```text
+/boot/optional/plugins/msedit/<version>/
+```
+
+并在插件根目录写 `template.json`。启动时 `installplugins-mos` 会重新安装该
+`.deb`，然后处理 `packages/packages` 里的附加包。
+
+- 二进制：`/boot/optional/plugins/msedit/bin/msedit`
+- ICU 包：`/boot/optional/plugins/msedit/packages/`
+- ICU 回退库：`/boot/optional/plugins/msedit/lib/`
+- 运行时副本：`/usr/bin/msedit.real`（RAM）
+
+如果手动 `dpkg -i`，插件只对当前运行有效；要让它重启后仍然存在，请使用
+MOS Hub，或把 `.deb`/`functions` 放到版本目录并补上 `template.json`。
 
 ---
 

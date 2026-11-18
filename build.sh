@@ -16,7 +16,7 @@ PKG_DIR="$ROOT/build/${PKG_NAME}_all"
 DEB_FILE="$ROOT/build/${PKG_NAME}_all.deb"
 PAGE_DIST="$ROOT/page/dist/msedit"
 
-echo "==> msedit MOS plugin ${VERSION}"
+echo "==> MSEdit MOS plugin ${VERSION}"
 
 if [ "${SKIP_PAGE:-0}" != "1" ]; then
   if ! command -v npm >/dev/null 2>&1; then
@@ -61,8 +61,8 @@ Architecture: all
 Maintainer: hustyanzu
 Section: utils
 Priority: optional
-Description: msedit plugin for MOS
- Microsoft Edit terminal editor with ICU runtime.
+Description: MSEdit plugin for MOS
+ Simple terminal text editor inspired by the MS-DOS Editor.
 EOF
 
 cat > "$PKG_DIR/DEBIAN/postinst" <<'EOF'
@@ -124,4 +124,4 @@ echo "Package: $DEB_FILE"
 echo "MD5:     $(cat "$DEB_FILE.md5")"
 echo
 echo "Install on MOS:  dpkg -i $(basename "$DEB_FILE")"
-echo "Then open Plugins -> msedit and click Install."
+echo "Then open Plugins -> MSEdit and click Install."

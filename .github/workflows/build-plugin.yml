@@ -78,8 +78,8 @@ jobs:
           Maintainer: hustyanzu
           Section: utils
           Priority: optional
-          Description: msedit plugin for MOS
-           Microsoft Edit terminal editor with ICU runtime.
+          Description: MSEdit plugin for MOS
+           Simple terminal text editor inspired by the MS-DOS Editor.
           EOF
 
           cat > ${PKG_DIR}/DEBIAN/postinst << 'EOF'
@@ -136,12 +136,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.VERSION }}
-          name: msedit ${{ steps.version.outputs.VERSION }}
+          name: MSEdit ${{ steps.version.outputs.VERSION }}
           body: |
-            ## msedit MOS plugin ${{ steps.version.outputs.VERSION }}
+            ## MSEdit MOS plugin ${{ steps.version.outputs.VERSION }}
 
             Install the plugin from the MOS Hub, then click **Install** on the plugin page.
-            msedit is downloaded from Microsoft's GitHub releases. ICU is installed by the plugin.
+            MSEdit is downloaded from Microsoft's GitHub releases.
           files: |
             msedit-${{ steps.version.outputs.VERSION }}-1+mos-plugin_all.deb
             msedit-${{ steps.version.outputs.VERSION }}-1+mos-plugin_all.deb.md5

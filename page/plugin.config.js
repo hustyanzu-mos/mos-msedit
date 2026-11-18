@@ -1,8 +1,8 @@
 export default {
   name: 'msedit',
-  displayName: 'msedit',
-  description: 'Microsoft Edit terminal editor with ICU runtime',
-  version: '0.1.0',
+  displayName: 'MSEdit',
+  description: 'Simple terminal text editor inspired by the MS-DOS Editor',
+  version: '0.1.1',
   icon: '',
   author: 'hustyanzu',
   homepage: 'https://github.com/microsoft/edit',
